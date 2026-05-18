@@ -9,13 +9,14 @@ from sklearn.metrics import accuracy_score, f1_score
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_mdp_transitions(npz_path: str = "sepsis_preprocessed.npz") -> tuple:
+def load_mdp_transitions(npz_path: str) -> tuple:
     """
-    Load states and actions from the preprocessed MDP file.
+    Load states and actions from the preprocessed MDP .npz file.
 
     Parameters
     ----------
-    npz_path : path to the .npz file produced by mdp_builder.py
+    npz_path : path to the .npz file produced by mdp_builder.save_mdp_artifacts
+               (typically ../data/preprocessed/sepsis_preprocessed.npz)
 
     Returns
     -------
@@ -36,15 +37,23 @@ def load_mdp_transitions(npz_path: str = "sepsis_preprocessed.npz") -> tuple:
 def split_and_scale_mdp(
     states: np.ndarray,
     actions: np.ndarray,
-    test_size: float = 0.20,
-    val_size: float  = 2 / 3,   # fraction of the non-train remainder
-    random_state: int = 42,
+    train_ratio: float = 0.64,
+    val_ratio: float   = 0.16,
+    random_state: int  = 42,
 ):
     """
     Stratified train / val / test split followed by MinMax scaling
     (fitted only on the training fold to avoid data leakage).
 
-    The default split matches the tabular baseline: 64 / 16 / 20 %.
+    Default split: 64 % train / 16 % val / 20 % test — mirrors the tabular baseline.
+
+    Parameters
+    ----------
+    states       : raw state array from load_mdp_transitions
+    actions      : action labels from load_mdp_transitions
+    train_ratio  : fraction of data for training (default 0.64)
+    val_ratio    : fraction of data for validation (default 0.16)
+    random_state : random seed
 
     Returns
     -------
@@ -52,21 +61,26 @@ def split_and_scale_mdp(
     y_train, y_val, y_test                      : np.ndarray
     scaler                                       : fitted MinMaxScaler
     """
-    # Keep 70 % for train+val, 30 % for test (mirrors the tabular split)
-    X_train, X_temp, y_train, y_temp = train_test_split(
+    test_ratio   = round(1.0 - train_ratio - val_ratio, 10)
+    temp_ratio   = train_ratio + val_ratio
+
+    # Step 1: carve out the test set
+    X_tv, X_test, y_tv, y_test = train_test_split(
         states, actions,
-        test_size=0.30,
+        test_size=test_ratio,
         random_state=random_state,
         stratify=actions,
     )
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp,
-        test_size=val_size,
+    # Step 2: split remaining into train / val
+    val_of_tv = val_ratio / temp_ratio
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_tv, y_tv,
+        test_size=val_of_tv,
         random_state=random_state,
-        stratify=y_temp,
+        stratify=y_tv,
     )
 
-    scaler = MinMaxScaler()
+    scaler         = MinMaxScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_val_scaled   = scaler.transform(X_val)
     X_test_scaled  = scaler.transform(X_test)

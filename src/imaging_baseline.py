@@ -10,10 +10,6 @@ from sklearn.metrics import accuracy_score, f1_score
 from PIL import Image
 
 
-# ---------------------------------------------------------------------------
-# Constants (must stay in sync with data_preprocessing.py)
-# ---------------------------------------------------------------------------
-
 STATE_COLS = [
     "HR", "SysBP", "MeanBP", "DiaBP", "RR", "Temp", "SpO2", "GCS",
     "pH", "BE", "HCO3", "FiO2", "PaO2", "PaCO2", "Lactate",
@@ -22,129 +18,106 @@ STATE_COLS = [
     "Hb", "WbcCount", "PlateletsCount", "PTT", "PT", "INR", "Age",
 ]
 
-# Column names — keep consistent with data_preprocessing.py
 ID_COL     = "PatientID"
 TIME_COL   = "Timepoints"
-ACTION_COL = "action_combined"   # created by discretize_actions() in feature_engineering.py
+ACTION_COL = "action_combined"
 
-T_MAX      = 20    # fixed episode length (pad / truncate)
-N_ACTIONS  = 25    # 5×5 action grid
+T_MAX     = 20
+N_ACTIONS = 25
 
-
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
 
 class HeatmapDataset(Dataset):
     """
-    Converts each patient episode (variable-length time series) into a
-    (3, 224, 224) image tensor built on the fly.
+    Converts each patient episode into a (3, 224, 224) image tensor.
 
-    Parameters
-    ----------
-    df           : DataFrame with normalised state columns, ID_COL,
-                   TIME_COL, and ACTION_COL.
-    patient_list : array of patient IDs to include.
-    label_list   : integer action label for each patient (most-frequent action).
-    state_cols   : list of feature column names (default STATE_COLS).
-    t_max        : episode length after padding / truncation.
+    The heatmap is built from heatmap_cols (base physiological features only).
+    Labels come from ACTION_COL (action_combined), which must be present in df.
     """
 
-    def __init__(
-        self,
-        df,
-        patient_list: np.ndarray,
-        label_list: np.ndarray,
-        state_cols: list = None,
-        t_max: int = T_MAX,
-    ):
+    def __init__(self, df, patient_list, label_list, heatmap_cols=None, t_max=T_MAX):
         self.df           = df
         self.patient_list = patient_list
         self.label_list   = label_list
-        self.state_cols   = state_cols or STATE_COLS
+        self.heatmap_cols = heatmap_cols or STATE_COLS
         self.t_max        = t_max
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.patient_list)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx):
         pid   = self.patient_list[idx]
         group = self.df[self.df[ID_COL] == pid].sort_values(TIME_COL)
-        mat   = group[self.state_cols].values.astype(np.float32)   # (T_i, n_features)
+        mat   = group[self.heatmap_cols].values.astype(np.float32)
 
-        # Pad or truncate to t_max rows
-        n_feats = len(self.state_cols)
+        n_feats = len(self.heatmap_cols)
         if len(mat) > self.t_max:
             mat = mat[: self.t_max, :]
         else:
             pad = np.zeros((self.t_max - len(mat), n_feats), dtype=np.float32)
             mat = np.vstack([mat, pad])
 
-        # Resize to 224×224 and replicate to 3 channels
         img = Image.fromarray((mat * 255).astype(np.uint8)).resize((224, 224), Image.BILINEAR)
         img = np.array(img, dtype=np.float32) / 255.0
-        img = np.stack([img, img, img], axis=0)   # (3, 224, 224)
+        img = np.stack([img, img, img], axis=0)
 
-        label = self.label_list[idx]
-        return torch.from_numpy(img), torch.tensor(label, dtype=torch.long)
+        return torch.from_numpy(img), torch.tensor(self.label_list[idx], dtype=torch.long)
 
-
-# ---------------------------------------------------------------------------
-# Data preparation helpers
-# ---------------------------------------------------------------------------
 
 def prepare_imaging_splits(
     df,
-    state_cols: list = None,
-    test_size: float = 0.20,
-    val_size: float  = 0.20,   # fraction of train+val (i.e. 16 % of total)
-    random_state: int = 42,
+    state_cols=None,
+    test_size=0.20,
+    val_size=0.20,
+    random_state=42,
 ):
     """
-    Normalise *df* globally (visualisation only), assign a per-patient label
-    (most-frequent action_combined), and return train / val / test patient arrays.
+    Prepare patient-level train/val/test splits for the imaging baseline.
 
     Parameters
     ----------
-    df            : preprocessed DataFrame containing state_cols + ID_COL
-                    + TIME_COL + ACTION_COL
-    state_cols    : feature columns to normalise; defaults to STATE_COLS
-    test_size     : fraction of patients for the test set (default 0.20)
-    val_size      : fraction of remaining patients for validation (default 0.20,
-                    giving 16 % of the total)
-    random_state  : random seed
+    df          : the fully preprocessed DataFrame (sepsis_preprocessed.csv).
+                  Must contain ID_COL, TIME_COL, ACTION_COL, and state_cols.
+                  Only state_cols columns are used for the heatmap pixels;
+                  ACTION_COL is used only for patient-level labels.
+    state_cols  : base physiological columns used to build the heatmap
+                  (default STATE_COLS — 35 columns, no engineered features).
+    test_size   : fraction of patients for the test set (default 0.20).
+    val_size    : fraction of remaining patients for validation (default 0.20,
+                  giving 16 % of the total).
+    random_state: random seed.
 
     Returns
     -------
-    df_norm                  : DataFrame with normalised features
-    (X_train_pat, y_train)   : training patients & labels
-    (X_val_pat,   y_val)     : validation patients & labels
-    (X_test_pat,  y_test)    : test patients & labels
+    df_norm              : DataFrame with state_cols normalised to [0, 1].
+    (X_train_pat, y_tr)  : training patient IDs and labels.
+    (X_val_pat,   y_val) : validation patient IDs and labels.
+    (X_test_pat,  y_te)  : test patient IDs and labels.
     """
-    cols    = state_cols or STATE_COLS
+    cols = state_cols or STATE_COLS
+
+    assert ACTION_COL in df.columns, (
+        f"'{ACTION_COL}' not found in DataFrame. "
+        "Pass sepsis_preprocessed.csv (after feature engineering), not sepsis_clean.csv."
+    )
+    for c in cols:
+        assert c in df.columns, f"Heatmap column '{c}' not found in DataFrame."
+
     df_norm = df.copy()
+    scaler  = MinMaxScaler()
+    df_norm[cols] = scaler.fit_transform(df_norm[cols])
 
-    # Global normalisation for heatmap rendering (does NOT affect tabular splits)
-    scaler         = MinMaxScaler()
-    df_norm[cols]  = scaler.fit_transform(df_norm[cols])
-
-    # Per-patient most-frequent action as label
     patient_ids    = df_norm[ID_COL].unique()
     patient_labels = np.array([
         df_norm[df_norm[ID_COL] == pid][ACTION_COL].mode()[0]
         for pid in patient_ids
     ])
 
-    X_patients = np.array(patient_ids)
-
-    # Step 1: carve out test set
     X_tv, X_test_pat, y_tv, y_test_pat = train_test_split(
-        X_patients, patient_labels,
+        patient_ids, patient_labels,
         test_size=test_size,
         random_state=random_state,
         stratify=patient_labels,
     )
-    # Step 2: carve out val from the remaining pool
     X_train_pat, X_val_pat, y_train_pat, y_val_pat = train_test_split(
         X_tv, y_tv,
         test_size=val_size,
@@ -164,43 +137,27 @@ def prepare_imaging_splits(
     )
 
 
-def build_data_loaders(
-    df_norm,
-    train_split: tuple,
-    val_split: tuple,
-    test_split: tuple,
-    batch_size: int = 32,
-    state_cols: list = None,
-    t_max: int = T_MAX,
-):
+def build_data_loaders(df_norm, train_split, val_split, test_split,
+                       batch_size=32, state_cols=None, t_max=T_MAX):
     """Wrap patient splits in HeatmapDataset and return (train, val, test) DataLoaders."""
     cols = state_cols or STATE_COLS
 
-    train_ds = HeatmapDataset(df_norm, *train_split, state_cols=cols, t_max=t_max)
-    val_ds   = HeatmapDataset(df_norm, *val_split,   state_cols=cols, t_max=t_max)
-    test_ds  = HeatmapDataset(df_norm, *test_split,  state_cols=cols, t_max=t_max)
+    train_ds = HeatmapDataset(df_norm, *train_split, heatmap_cols=cols, t_max=t_max)
+    val_ds   = HeatmapDataset(df_norm, *val_split,   heatmap_cols=cols, t_max=t_max)
+    test_ds  = HeatmapDataset(df_norm, *test_split,  heatmap_cols=cols, t_max=t_max)
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=0)
+    return (
+        DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0),
+        DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0),
+        DataLoader(test_ds,  batch_size=batch_size, shuffle=False, num_workers=0),
+    )
 
-    return train_loader, val_loader, test_loader
 
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
-
-def build_resnet18(n_actions: int = N_ACTIONS, dropout: float = 0.5) -> nn.Module:
-    """
-    Load pretrained ResNet-18, freeze the backbone, and replace the head with
-    a two-layer MLP that outputs *n_actions* logits.
-    """
+def build_resnet18(n_actions=N_ACTIONS, dropout=0.5):
+    """Load pretrained ResNet-18, freeze backbone, replace head with a 2-layer MLP."""
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-
     for param in model.parameters():
         param.requires_grad = False
-
     num_ftrs = model.fc.in_features
     model.fc = nn.Sequential(
         nn.Dropout(dropout),
@@ -211,41 +168,20 @@ def build_resnet18(n_actions: int = N_ACTIONS, dropout: float = 0.5) -> nn.Modul
     return model
 
 
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
-
 def train_resnet18(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    n_epochs: int = 20,
-    lr: float = 1e-3,
-    save_path: str = "best_resnet18_sepsis.pth",
-    device: torch.device = None,
-    return_logs: bool = False,
+    model, train_loader, val_loader,
+    n_epochs=20, lr=1e-3,
+    save_path="best_resnet18_sepsis.pth",
+    device=None,
+    return_logs=False,
 ):
     """
-    Train *model* for *n_epochs* epochs, saving the best checkpoint by
-    validation accuracy.
+    Train model for n_epochs epochs, saving the best checkpoint by validation accuracy.
 
     Parameters
     ----------
-    model        : ResNet-18 with custom head (from build_resnet18)
-    train_loader : DataLoader for training split
-    val_loader   : DataLoader for validation split
-    n_epochs     : number of training epochs
-    lr           : learning rate for Adam (head parameters only)
-    save_path    : file path for the best checkpoint (.pth)
-    device       : torch device; auto-detected if None
-    return_logs  : if True, return (model, epoch_logs) instead of just model
-                   epoch_logs is a list of dicts {epoch, loss, val_acc}
-
-    Returns
-    -------
-    model  (with best validation-accuracy weights loaded)
-    — or —
-    (model, epoch_logs)  when return_logs=True
+    return_logs : if True, return (model, epoch_logs) where epoch_logs is a list of
+                  dicts {epoch, loss, val_acc}. If False, return model only.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -260,11 +196,8 @@ def train_resnet18(
     logs         = []
 
     for epoch in range(n_epochs):
-        # ---- training ----
         model.train()
-        total_loss = 0.0
-        n_samples  = 0
-
+        total_loss, n_samples = 0.0, 0
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -274,7 +207,6 @@ def train_resnet18(
             total_loss += loss.item() * images.size(0)
             n_samples  += images.size(0)
 
-        # ---- validation ----
         model.eval()
         correct = total = 0
         with torch.no_grad():
@@ -292,43 +224,22 @@ def train_resnet18(
             best_val_acc = val_acc
             torch.save(model.state_dict(), save_path)
 
-        print(
-            f"Epoch {epoch + 1:2d}/{n_epochs} | "
-            f"Loss: {epoch_loss:.4f} | Val Acc: {val_acc:.4f}"
-        )
+        print(f"Epoch {epoch+1:2d}/{n_epochs} | Loss: {epoch_loss:.4f} | Val Acc: {val_acc:.4f}")
         gc.collect()
 
-    # Restore best weights
     model.load_state_dict(torch.load(save_path, map_location=device))
     print(f"\nBest val accuracy: {best_val_acc:.4f} — checkpoint: {save_path}")
 
-    if return_logs:
-        return model, logs
-    return model
+    return (model, logs) if return_logs else model
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
-
-def evaluate_resnet18(
-    model: nn.Module,
-    test_loader: DataLoader,
-    device: torch.device = None,
-) -> dict:
-    """
-    Run inference on *test_loader* and return accuracy + macro F1.
-
-    Returns
-    -------
-    dict with keys: model_name, accuracy, macro_f1
-    """
+def evaluate_resnet18(model, test_loader, device=None):
+    """Run inference on test_loader and return accuracy + macro F1."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = model.to(device)
     model.eval()
-
     all_preds, all_labels = [], []
     with torch.no_grad():
         for images, labels in test_loader:
@@ -339,6 +250,5 @@ def evaluate_resnet18(
 
     acc = accuracy_score(all_labels, all_preds)
     f1  = f1_score(all_labels, all_preds, average="macro", zero_division=0)
-
     print(f"{'ResNet-18 (frozen)':30s} | Accuracy: {acc:.4f} | Macro F1: {f1:.4f}")
     return {"model_name": "ResNet-18 (frozen)", "accuracy": acc, "macro_f1": f1}
