@@ -1,3 +1,15 @@
+"""
+imaging_baseline.py
+===================
+ResNet-18 imaging baseline: converts each ICU episode into a (3, 224, 224)
+heatmap image and trains a frozen ResNet-18 classifier for action prediction.
+
+Fix vs original
+---------------
+BUG 5 FIXED: STATE_COLS, ID_COL, TIME_COL are now imported from data_preprocessing
+             instead of being redefined locally, eliminating divergence risk.
+"""
+
 import gc
 import numpy as np
 import torch
@@ -9,32 +21,29 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import accuracy_score, f1_score
 from PIL import Image
 
+# FIX BUG 5: import constants from the single source of truth
+from data_preprocessing import STATE_COLS, ID_COL, TIME_COL
 
-STATE_COLS = [
-    "HR", "SysBP", "MeanBP", "DiaBP", "RR", "Temp", "SpO2", "GCS",
-    "pH", "BE", "HCO3", "FiO2", "PaO2", "PaCO2", "Lactate",
-    "K", "Na", "Cl", "Ca", "IonisedCa", "CO2", "Mg",
-    "BUN", "Creatinine", "Albumin", "SGOT", "SGPT", "TotalBili",
-    "Hb", "WbcCount", "PlateletsCount", "PTT", "PT", "INR", "Age",
-]
-
-ID_COL     = "PatientID"
-TIME_COL   = "Timepoints"
-ACTION_COL = "action_combined"
+ACTION_COL = "action_combined"   # produced by feature_engineering.discretize_actions
 
 T_MAX     = 20
 N_ACTIONS = 25
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset
+# ─────────────────────────────────────────────────────────────────────────────
+
 class HeatmapDataset(Dataset):
     """
     Converts each patient episode into a (3, 224, 224) image tensor.
 
-    The heatmap is built from heatmap_cols (base physiological features only).
-    Labels come from ACTION_COL (action_combined), which must be present in df.
+    The heatmap is built from heatmap_cols (base physiological features).
+    Labels come from ACTION_COL (action_combined) — must be present in df.
     """
 
-    def __init__(self, df, patient_list, label_list, heatmap_cols=None, t_max=T_MAX):
+    def __init__(self, df, patient_list, label_list,
+                 heatmap_cols=None, t_max=T_MAX):
         self.df           = df
         self.patient_list = patient_list
         self.label_list   = label_list
@@ -51,17 +60,26 @@ class HeatmapDataset(Dataset):
 
         n_feats = len(self.heatmap_cols)
         if len(mat) > self.t_max:
-            mat = mat[: self.t_max, :]
+            mat = mat[:self.t_max, :]
         else:
             pad = np.zeros((self.t_max - len(mat), n_feats), dtype=np.float32)
             mat = np.vstack([mat, pad])
 
-        img = Image.fromarray((mat * 255).astype(np.uint8)).resize((224, 224), Image.BILINEAR)
+        img = Image.fromarray(
+            (mat * 255).astype(np.uint8)
+        ).resize((224, 224), Image.BILINEAR)
         img = np.array(img, dtype=np.float32) / 255.0
         img = np.stack([img, img, img], axis=0)
 
-        return torch.from_numpy(img), torch.tensor(self.label_list[idx], dtype=torch.long)
+        return (
+            torch.from_numpy(img),
+            torch.tensor(self.label_list[idx], dtype=torch.long),
+        )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data preparation
+# ─────────────────────────────────────────────────────────────────────────────
 
 def prepare_imaging_splits(
     df,
@@ -71,40 +89,34 @@ def prepare_imaging_splits(
     random_state=42,
 ):
     """
-    Prepare patient-level train/val/test splits for the imaging baseline.
+    Patient-level train / val / test split for the imaging baseline.
 
     Parameters
     ----------
-    df          : the fully preprocessed DataFrame (sepsis_preprocessed.csv).
+    df          : Fully preprocessed DataFrame (output of W2 pipeline).
                   Must contain ID_COL, TIME_COL, ACTION_COL, and state_cols.
-                  Only state_cols columns are used for the heatmap pixels;
-                  ACTION_COL is used only for patient-level labels.
-    state_cols  : base physiological columns used to build the heatmap
-                  (default STATE_COLS — 35 columns, no engineered features).
-    test_size   : fraction of patients for the test set (default 0.20).
-    val_size    : fraction of remaining patients for validation (default 0.20,
-                  giving 16 % of the total).
-    random_state: random seed.
+    state_cols  : Base physiological columns for heatmap pixels
+                  (default: STATE_COLS — 35 columns, no engineered features).
+    test_size   : Fraction of patients for test set (default 0.20).
+    val_size    : Fraction of remaining patients for validation (default 0.20).
+    random_state: Random seed.
 
     Returns
     -------
-    df_norm              : DataFrame with state_cols normalised to [0, 1].
-    (X_train_pat, y_tr)  : training patient IDs and labels.
-    (X_val_pat,   y_val) : validation patient IDs and labels.
-    (X_test_pat,  y_te)  : test patient IDs and labels.
+    df_norm, (X_train_pat, y_tr), (X_val_pat, y_val), (X_test_pat, y_te)
     """
     cols = state_cols or STATE_COLS
 
     assert ACTION_COL in df.columns, (
-        f"'{ACTION_COL}' not found in DataFrame. "
-        "Pass sepsis_preprocessed.csv (after feature engineering), not sepsis_clean.csv."
+        f"'{ACTION_COL}' not found. Pass sepsis_preprocessed.csv "
+        "(after feature engineering), not sepsis_clean.csv."
     )
     for c in cols:
         assert c in df.columns, f"Heatmap column '{c}' not found in DataFrame."
 
-    df_norm = df.copy()
-    scaler  = MinMaxScaler()
-    df_norm[cols] = scaler.fit_transform(df_norm[cols])
+    df_norm        = df.copy()
+    scaler         = MinMaxScaler()
+    df_norm[cols]  = scaler.fit_transform(df_norm[cols])
 
     patient_ids    = df_norm[ID_COL].unique()
     patient_labels = np.array([
@@ -114,14 +126,12 @@ def prepare_imaging_splits(
 
     X_tv, X_test_pat, y_tv, y_test_pat = train_test_split(
         patient_ids, patient_labels,
-        test_size=test_size,
-        random_state=random_state,
+        test_size=test_size, random_state=random_state,
         stratify=patient_labels,
     )
     X_train_pat, X_val_pat, y_train_pat, y_val_pat = train_test_split(
         X_tv, y_tv,
-        test_size=val_size,
-        random_state=random_state,
+        test_size=val_size, random_state=random_state,
         stratify=y_tv,
     )
 
@@ -140,8 +150,7 @@ def prepare_imaging_splits(
 def build_data_loaders(df_norm, train_split, val_split, test_split,
                        batch_size=32, state_cols=None, t_max=T_MAX):
     """Wrap patient splits in HeatmapDataset and return (train, val, test) DataLoaders."""
-    cols = state_cols or STATE_COLS
-
+    cols     = state_cols or STATE_COLS
     train_ds = HeatmapDataset(df_norm, *train_split, heatmap_cols=cols, t_max=t_max)
     val_ds   = HeatmapDataset(df_norm, *val_split,   heatmap_cols=cols, t_max=t_max)
     test_ds  = HeatmapDataset(df_norm, *test_split,  heatmap_cols=cols, t_max=t_max)
@@ -153,9 +162,13 @@ def build_data_loaders(df_norm, train_split, val_split, test_split,
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Model
+# ─────────────────────────────────────────────────────────────────────────────
+
 def build_resnet18(n_actions=N_ACTIONS, dropout=0.5):
     """Load pretrained ResNet-18, freeze backbone, replace head with a 2-layer MLP."""
-    model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+    model   = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     for param in model.parameters():
         param.requires_grad = False
     num_ftrs = model.fc.in_features
@@ -168,6 +181,10 @@ def build_resnet18(n_actions=N_ACTIONS, dropout=0.5):
     return model
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Training
+# ─────────────────────────────────────────────────────────────────────────────
+
 def train_resnet18(
     model, train_loader, val_loader,
     n_epochs=20, lr=1e-3,
@@ -176,12 +193,12 @@ def train_resnet18(
     return_logs=False,
 ):
     """
-    Train model for n_epochs epochs, saving the best checkpoint by validation accuracy.
+    Train for n_epochs, saving the best checkpoint by validation accuracy.
 
     Parameters
     ----------
-    return_logs : if True, return (model, epoch_logs) where epoch_logs is a list of
-                  dicts {epoch, loss, val_acc}. If False, return model only.
+    return_logs : If True, return (model, logs) where logs is list of dicts
+                  {epoch, loss, val_acc}. If False, return model only.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -224,14 +241,18 @@ def train_resnet18(
             best_val_acc = val_acc
             torch.save(model.state_dict(), save_path)
 
-        print(f"Epoch {epoch+1:2d}/{n_epochs} | Loss: {epoch_loss:.4f} | Val Acc: {val_acc:.4f}")
+        print(f"Epoch {epoch+1:2d}/{n_epochs} | "
+              f"Loss: {epoch_loss:.4f} | Val Acc: {val_acc:.4f}")
         gc.collect()
 
     model.load_state_dict(torch.load(save_path, map_location=device))
     print(f"\nBest val accuracy: {best_val_acc:.4f} — checkpoint: {save_path}")
-
     return (model, logs) if return_logs else model
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Evaluation
+# ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate_resnet18(model, test_loader, device=None):
     """Run inference on test_loader and return accuracy + macro F1."""
@@ -243,7 +264,7 @@ def evaluate_resnet18(model, test_loader, device=None):
     all_preds, all_labels = [], []
     with torch.no_grad():
         for images, labels in test_loader:
-            images = images.to(device)
+            images  = images.to(device)
             _, pred = torch.max(model(images), 1)
             all_preds.extend(pred.cpu().numpy())
             all_labels.extend(labels.numpy())

@@ -1,0 +1,5 @@
+Method,CVR_%,SafeCVR_%,C4_CVR_%,BC_top1_%,BC_top3_%,SR_%,FQE_V,Intervention_%,Note
+Clinician (behavior),5.79,,0.019999999552965164,100.0,100.0,60.02,,,Dataset reference
+Random policy,,,,4.0,12.0,,,,Lower bound: 1/25 and 3/25
+CPQ-IQL (no filter),4.3,,1.66,5.54,14.25,61.93,7.2099,,Stage 1 only
+CPQ-IQL + Safe Actions,4.3,0.53,0.0,5.54,14.25,61.93,7.2099,15.0,Full two-stage framework
