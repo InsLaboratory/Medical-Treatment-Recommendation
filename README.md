@@ -141,7 +141,7 @@ statsmodels==0.13.5  missingno==0.5.1      imbalanced-learn==0.10.1
 The dataset is the **Health Gym Sepsis synthetic dataset (v1.0.0)** published by Kuo et al. (2022) in *Scientific Data*. It contains 43,280 ICU timesteps (4-hour intervals) synthetically generated from MIMIC-III.
 
 **Access:** Available on PhysioNet after signing a data use agreement.  
-→ [https://physionet.org/content/health-gym/1.0.0/](https://physionet.org/content/health-gym/1.0.0/)
+→ [https://physionet.org/content/synthetic-mimic-iii-health-gym/1.0.0/](https://physionet.org/content/synthetic-mimic-iii-health-gym/1.0.0/)
 
 Once downloaded, place the CSV file in the `data/` directory.
 
