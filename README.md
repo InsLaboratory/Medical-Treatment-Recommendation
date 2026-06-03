@@ -17,65 +17,14 @@ The pipeline is built on the Health Gym synthetic sepsis dataset (Kuo et al., 20
 
 ```
 Medical-Treatment-Recommendation/
-├── data/                         Raw and preprocessed datasets
-│   └── README.md                 Data access instructions
-├── notebooks/
-│   ├── W2_data_exploration.ipynb         EDA and feature analysis
-│   ├── W2_baseline_experiments.ipynb     Supervised and RL baselines
-│   ├── W3_CPQ_IQL.ipynb                  CPQ-IQL training and ablation
-│   ├── W3_offline_RL_methods.ipynb       Offline RL methods comparison
-│   └── W3_comparison.ipynb               Final cross-method comparison
-├── src/
-│   ├── data_preprocessing.py     Data cleaning and normalisation
-│   ├── feature_engineering.py    Feature construction and MDP encoding
-│   ├── mdp_builder.py            MDP dataset construction
-│   ├── behaviour_cloning.py      Behaviour Cloning baseline
-│   ├── tabular_baselines.py      LR / RF / MLP classifiers
-│   ├── imaging_baseline.py       ResNet-18 baseline
-│   ├── random_baseline.py        Random policy
-│   ├── dqn_baseline.py           DQN baseline
-│   ├── iql_baseline.py           IQL baseline
-│   ├── cql_baseline.py           CQL baseline
-│   ├── cpq_iql.py                CPQ-IQL (main algorithm)
-│   ├── safe_actions.py           Stage 2 — Safe Actions filter
-│   ├── evaluation.py             Off-policy evaluation (WIS, FQE)
-│   ├── evaluation_baseline.py    Baseline evaluation utilities
-│   ├── baselines_results.py      Results aggregation
-│   └── results_utils.py          Plotting and reporting utilities
-├── figures/
-│   ├── preprocessing/            EDA and preprocessing figures
-│   ├── baselines/                Baseline training curves and comparisons
-│   ├── cpq_iql/                  CPQ-IQL training, ablation, sensitivity
-│   └── comparison/               Cross-method comparison figures
-├── models/
-│   ├── dqn/                      DQN checkpoints (best / final)
-│   ├── iql/                      IQL checkpoints
-│   ├── cql/                      CQL checkpoints
-│   └── cpq_iql/                  CPQ-IQL checkpoints (main + all ablation variants)
-│       ├── alpha_0.0/ … alpha_5.0/           α-sensitivity runs
-│       ├── ablation_Constraint_*/            Per-constraint ablations
-│       └── ablation_Component_*/             Per-component ablations
-├── experiments/
-│   ├── final_results.csv         Main results table
-│   ├── comparison_summary.csv    Cross-method comparison
-│   ├── baselines_summary.csv     Baseline metrics
-│   ├── sensitivity_alpha.csv     α-sensitivity sweep
-│   ├── ablation_full.csv         Full ablation study
-│   ├── ablation_constraints.csv  Constraint ablation
-│   ├── training_history.csv      CPQ-IQL training log
-│   ├── dqn_training_history.csv
-│   ├── iql_training_history.csv
-│   ├── cql_training_history.csv
-│   ├── cpq_iql_training_history.csv
-│   └── all_results.json          Consolidated results
-├── reports/
-│   ├── W1_project_scope.pdf      Week 1 — Project scope
-│   ├── W2_baseline_report.pdf    Week 2 — Baseline experiments
-│   ├── W3_experiments_summary.pdf  Week 3 — Experiments summary
-│   └── final_report.pdf          Final research report
-├── cpqiql_dashboard.py           Interactive Streamlit analysis dashboard
-├── requirements.txt
-└── README.md
+├── notebooks/      Jupyter notebooks for each experimental stage
+├── src/            Python modules — preprocessing, MDP, algorithms, evaluation
+├── models/         Saved checkpoints for all trained models and ablation variants
+├── experiments/    Training logs, results CSVs, and JSON result files
+├── figures/        All generated plots (preprocessing, baselines, CPQ-IQL, comparison)
+├── reports/        Weekly and final research reports (PDF)
+├── cpqiql_dashboard.py   Interactive Streamlit analysis dashboard
+└── requirements.txt
 ```
 
 ---
